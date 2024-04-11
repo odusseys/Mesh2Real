@@ -1,8 +1,14 @@
+from mesh2real.materials import MaterialPredictor
+from mesh2real.pipelines import Mesh2RealDiffuser
 import torch
 import numpy as np
 from .view_generation import ANGLES_RAD
-from .constants import IMAGE_SIZE, RENDERED_IMAGE_SIZE
-from .rendering import init_maps
+from .constants import IMAGE_SIZE, MATERIAL_PREDICTION_SIZE
+from .rendering import ShadingMaps, init_maps, polar_camera_and_light, render_scene, render_mesh_grid
+import math
+from PIL import Image
+from .utils import clear_cuda, resize_image_array
+from IPython.display import display
 
 def blur(image, n):
   image = torch.transpose(image, 3, 1)
@@ -85,16 +91,14 @@ def bake_initial_texture(mesh, main_view, views, initial_maps=None, num_epochs=5
     loss_with_decay = loss if loss_with_decay is None else loss_with_decay * loss_decay + loss * (1 - loss_decay)
   return maps.detach()
 
-def bake_materials(mesh, maps, num_epochs=28, lr=8.0):
+def bake_materials(material_model: MaterialPredictor, mesh, maps: ShadingMaps, num_epochs=28, lr=1.0):
   maps.freeze_texture()
-
-  plot_interval = num_epochs // 10 if num_epochs > 10 else 1
-  optimizer = torch.optim.SGD(params=[maps.ka, maps.kd, maps.ks, maps.alpha], lr=lr)
+  optimizer = torch.optim.SGD(params=[maps.roughness, maps.metallic], lr=lr)
   loss_with_decay = None
   loss_decay = 0.9
   i = 0
 
-  for epoch in range(num_epochs):
+  for _ in range(num_epochs):
     if i == 0:
       phi, theta = 0, math.pi/2
     else:
@@ -102,33 +106,29 @@ def bake_materials(mesh, maps, num_epochs=28, lr=8.0):
       theta = elevation + math.pi / 2
     i = (i + 1) % (len(ANGLES_RAD) + 1)
     cam, lighting = polar_camera_and_light(1.5, phi, theta)
-    output = render_scene(mesh, maps, cam, lighting)
+    output = render_scene(mesh, maps, cam, lighting, resolution=MATERIAL_PREDICTION_SIZE)
     pil_image = Image.fromarray((output.rendered.detach().cpu().numpy() * 255.0).astype("uint8"))
+    # TODO: all views simultaneously
     with torch.no_grad():
-      pred = matformer([pil_image])[0]
-      # display_array_image(pred[:,:,3])
-      pred = resize_image_array(pred, RENDERED_IMAGE_SIZE)
+      pred = material_model([pil_image])[0]
     shading = output.shading
 
-    materials = torch.squeeze(torch.stack([shading.ka, shading.kd, shading.ks, shading.alpha], axis=-1))
+    materials = torch.squeeze(torch.stack([shading.roughness, shading.metallic], axis=-1))
     loss = ((pred - materials) ** 2).sum()
 
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
 
-
     with torch.no_grad():
-      torch.clamp_(maps.ks, 0, 1)
-      torch.clamp_(maps.kd, 0, 1)
-      torch.clamp_(maps.ka, 0, 1)
-      torch.clamp_(maps.alpha, 0, 1)
+      torch.clamp_(maps.metallic, 0, 1)
+      torch.clamp_(maps.roughness, 0, 1)
 
     loss_with_decay = loss if loss_with_decay is None else loss_with_decay * loss_decay + loss * (1 - loss_decay)
   maps.normalize()
   return maps.detach()
 
-def refine_texture(prompt, mesh, maps, num_epochs=100, lr=1.0, strength=0.8,
+def refine_texture(pipe: Mesh2RealDiffuser, prompt, mesh, maps, num_epochs=100, lr=1.0, strength=0.8,
                   r_range=[0.7, 0.8], phi_range=[0, 0.1], theta_range=[0, 2], ):
   maps.freeze_materials()
   plot_interval = num_epochs // 10 if num_epochs > 10 else 1
@@ -146,8 +146,7 @@ def refine_texture(prompt, mesh, maps, num_epochs=100, lr=1.0, strength=0.8,
     output = render_scene(mesh, maps, cam, lighting)
     pil_image = Image.fromarray((output.rendered.detach().cpu().numpy() * 255.0).astype("uint8")).resize((IMAGE_SIZE, IMAGE_SIZE))
     pil_edges = Image.fromarray((output.edges.detach().cpu().numpy() * 255.0).astype("uint8")).resize((IMAGE_SIZE, IMAGE_SIZE))
-    pil_depth= Image.fromarray((output.depth.detach().cpu().numpy() * 255.0).astype("uint8")).resize((IMAGE_SIZE, IMAGE_SIZE))
-    real_img = denoise(prompt, pil_image, pil_edges, pil_depth, strength=strength)
+    real_img = pipe(prompt, pil_edges, image=pil_image, strength=strength)
     real = torch.tensor(np.array(real_img) / 255).to("cuda")
     loss = ((output.rendered - real) ** 2).sum()
     loss += lambda_image * texture_loss(maps.texture)

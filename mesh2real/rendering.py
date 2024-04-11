@@ -6,20 +6,26 @@ import kaolin as kal
 from .constants import IMAGE_SIZE, RENDERED_IMAGE_SIZE, TEXTURE_SIZE
 import math
 import torchvision
-from .utils import compute_edges
+from .utils import compute_edges, resize_image_array
 
 print("Initializing rendering context, this may take a while")
 glctx = nvdiffrast.torch.RasterizeCudaContext(device=torch.device('cuda'))
 print("Rendering context ready")
 
+class ShadingOutputs:
+  def __init__(self, shaded, roughness, metallic) -> None:
+    self.shaded = shaded
+    self.metallic = metallic
+    self.roughness = roughness
 
 class RenderOutput:
-  def __init__(self, rendered, edges, depth, background_mask, object_mask):
+  def __init__(self, rendered, edges, depth, background_mask, object_mask, shading):
     self.rendered = rendered
     self.edges = edges
     self.depth = depth
     self.background_mask = background_mask
     self.object_mask = object_mask
+    self.shading = shading
 
 class Lighting:
   def __init__(self, direction=None, ambient_intensity=0.03, intensity=1.0):
@@ -97,17 +103,8 @@ def polar_camera_and_light(r, phi, theta):
   light_direction = torch.tensor(eye / eye_norm, dtype=torch.float32).view(1, 1, 3).cuda()
   return camera, Lighting(direction=light_direction)
 
-def random_camera_and_light(r_range = [0.9, 1.1], phi_range=[0, 1], theta_range=[0, 1]):
-  [r, theta, phi] = random_polar(r_range, phi_range, theta_range)
-  return polar_camera_and_light(r, phi, theta)
-
-def resize_image_array(img, size):
-  transposed = torch.transpose(img, 0, 2)
-  resized_transposed = torchvision.transforms.Resize(size, antialias=True)(transposed)
-  return torch.transpose(resized_transposed, 0, 2)
-
 #
-# All formulas from https://learnopengl.com/PBR/Lighting
+# All formulas taken from https://learnopengl.com/PBR/Lighting
 #
 
 def dot(X, Y):
@@ -169,8 +166,8 @@ def shade_scene_pbr(mesh, maps, lighting, camera_eye, rast_out, rast_out_db):
 
   res = res / (1 + res)
   res = res ** 0.4545
-
-  return torch.squeeze(res)
+  shaded = torch.squeeze(res)
+  return ShadingOutputs(shaded, roughness, metallic)
 
 def render_scene(mesh, maps, cam, lighting, depth_slack=0.2,
                  resolution=RENDERED_IMAGE_SIZE, debug=False, background_color=0.0):
@@ -194,8 +191,8 @@ def render_scene(mesh, maps, cam, lighting, depth_slack=0.2,
   depth = torch.where(object_mask, (depth + depth_slack) / (1 + depth_slack), 0.0)
   depth = torch.squeeze(torch.cat((depth,depth,depth), 3))
   
-  rendered = shade_scene_pbr(mesh, maps, lighting, camera_eye, rast_out, rast_out_db)
-  rendered = torch.where(background, background_color, rendered)
+  shading = shade_scene_pbr(mesh, maps, lighting, camera_eye, rast_out, rast_out_db)
+  rendered = torch.where(background, background_color, shading.shaded)
   edge_input = resize_image_array(rendered, IMAGE_SIZE)
 
   shade_img = Image.fromarray((torch.squeeze(edge_input).detach().cpu().numpy() * 255.0).astype("uint8")).resize((IMAGE_SIZE, IMAGE_SIZE))
@@ -207,7 +204,8 @@ def render_scene(mesh, maps, cam, lighting, depth_slack=0.2,
     edges=edges,
     depth=depth,
     background_mask=background, 
-    object_mask=object_mask
+    object_mask=object_mask,
+    shading=shading
   )
 
 

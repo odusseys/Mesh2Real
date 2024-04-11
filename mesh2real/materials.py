@@ -6,17 +6,16 @@ from featup.util import norm
 import numpy as np
 
 N_FEATURES = 384
-IMAGE_SIZE = 256
+INPUT_SIZE = 224
 N_MAPS=2
 PARAM_NAMES = ["roughness", "metallic"]
 
 IMAGE_TRANSFORM = T.Compose([
-    T.Resize(224),
     T.ToTensor(),
     norm
 ])
 
-def normalize_image(image, size=IMAGE_SIZE):
+def normalize_image(image, size=INPUT_SIZE):
   l = min(image.width, image.height)
   return image.crop((0,0,l,l)).resize((size,size))
 
@@ -97,12 +96,11 @@ class MaterialPredictionHead(nn.Module):
     feats_transformed = self.feature_transform(feature_maps)
     features_fused = torch.cat([img_transformed, feats_transformed], dim=1)
     return self.head(features_fused).permute((0, 2, 3, 1))
-
 class MaterialPredictor(nn.Module):
   def __init__(self, head, upsampler = None, device="cuda"):
     super().__init__()
     self.device = device
-    self.upsampler = upsampled if upsampler is not None else torch.hub.load("mhamilton723/FeatUp", 'dinov2').to(device).eval()
+    self.upsampler = upsampler if upsampler is not None else torch.hub.load("mhamilton723/FeatUp", 'dinov2').to(device).eval()
     self.head = head
   
   def forward(self, images):

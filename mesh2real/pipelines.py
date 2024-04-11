@@ -10,6 +10,9 @@ from .registration import edge_registration
 from .utils import clear_cuda
 from diffusers.image_processor import IPAdapterMaskProcessor
 
+def make_upsampler():
+    return 
+
 def make_img2img_pipe():
     controlnet = ControlNetModel.from_pretrained(
         "diffusers/controlnet-canny-sdxl-1.0",
@@ -79,15 +82,18 @@ IMAGE_SIZE = 1024
 BLANK_IMAGE = Image.fromarray(np.full((IMAGE_SIZE, IMAGE_SIZE, 3), 0).astype(np.uint8))
 
 class Mesh2RealDiffuser():
-    def __init__(self, img2img_pipeline, text2img_pipeline):
+    def __init__(self, img2img_pipeline, text2img_pipeline, upsampler):
         super().__init__()
         self.img2img_pipeline = img2img_pipeline
         self.text2img_pipeline = text2img_pipeline
+        self.upsampler = upsampler
     
     def build():
+        # TODO: compile models
         img2img_pipeline = make_img2img_pipe().to("cuda")
         text2img_pipeline = make_text2img_pipe(img2img_pipeline).to("cuda")
-        return Mesh2RealDiffuser(img2img_pipeline, text2img_pipeline)
+        upsampler = torch.hub.load("mhamilton723/FeatUp", 'dinov2').eval().cuda()
+        return Mesh2RealDiffuser(img2img_pipeline, text2img_pipeline, upsampler)
 
     def to(self, device):
         self.img2img_pipeline.to(device)
@@ -168,6 +174,6 @@ class Mesh2RealDiffuser():
     
     def fix_edges(self, image, edges):
         with torch.no_grad():
-            return edge_registration(self, image, edges)
+            return edge_registration(self, self.upsampler, image, edges)
 
     

@@ -11,10 +11,6 @@ from skimage.color import rgb2gray
 from skimage.transform import warp
 from skimage.registration import optical_flow_tvl1
 
-def make_upsampler():
-    return torch.hub.load("mhamilton723/FeatUp", 'dinov2').cuda().eval()
-
-
 def warp_image(image0, image1, target, order=3):
   image0 = np.array(image0)
   image1 = np.array(image1)
@@ -80,14 +76,14 @@ def norm_features(f):
     f[:,:,i] = clahe.apply(f[:,:,i])
   return f
 
-def semantic_registration(image0, image1):
+def semantic_registration(upsampler, image0, image1):
     [f1, f2] = get_featup_features(upsampler, [image0, image1])
-    f1, f2 = reduce_dimension(features[0], features[1], 3)
+    f1, f2 = reduce_dimension(f1, f2, 3)
     f1 = norm_features(f1)
     f2 = norm_features(f2)
     return warp_image(Image.fromarray(f1.astype(np.uint8)), Image.fromarray(f2.astype(np.uint8)), image1)
 
-def edge_registration(pipeline, image, edges):
+def edge_registration(upsampler, pipeline, image, edges):
     def denoise(init_image, strength=1,
             controlnet_conditioning_scale=0.5, ip_adapter_scale=0.5):
         return pipeline(
@@ -103,6 +99,6 @@ def edge_registration(pipeline, image, edges):
     raw_correction = denoise(warped,
                         controlnet_conditioning_scale=0.9, strength=1, ip_adapter_scale=1)
     
-    warped = semantic_registration(image, raw_correction)
+    warped = semantic_registration(upsampler, image, raw_correction)
     return denoise("", warped,
                         controlnet_conditioning_scale=0.3, strength=0.5, ip_adapter_scale=1)

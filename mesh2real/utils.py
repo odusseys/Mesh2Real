@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image
 import gc
 import torch
+import torchvision
 
 def compute_edges(image):
   image = np.array(image)
@@ -15,3 +16,8 @@ def clear_cuda():
     gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
+
+def resize_image_array(img, size):
+  transposed = torch.transpose(img, 0, 2)
+  resized_transposed = torchvision.transforms.Resize(size, antialias=True)(transposed)
+  return torch.transpose(resized_transposed, 0, 2)

@@ -54,7 +54,7 @@ def prepare_zero123_inputs(mesh):
     view_edges.append(edges)
 
   depth_grid = make_depth_grid(view_depths)
-  return condition_edges, condition_depth, depth_grid
+  return condition_edges, condition_depth, depth_grid, view_edges
 
 
 def breakdown_view_grid(grid):
@@ -78,9 +78,10 @@ def generate_views(zero123_pipeline, image, image_depth, depth_grid, num_inferen
     depth = depth.resize((320 * 2, 320 * 3))
     result = zero123_pipeline(image, depth_image=depth_grid, num_inference_steps=num_inference_steps).images[0]
     views = breakdown_view_grid(result)
-    return result, views
+    return views
 
 class ViewGenerator():
+
   def __init__(self):
     pipe = DiffusionPipeline.from_pretrained(
     "sudo-ai/zero123plus-v1.2", custom_pipeline="sudo-ai/zero123plus-pipeline",
@@ -90,12 +91,27 @@ class ViewGenerator():
         "sudo-ai/controlnet-zp11-depth-v1", torch_dtype=torch.float16
     ), conditioning_scale=0.75)
     self.pipe = pipe
+
   
   def generate_views(self, diffusion_pipeline: Mesh2RealDiffuser, mesh, prompt, negative_prompt = None,  num_inference_steps=100):
-    condition_edges, condition_depth, depth_grid = prepare_zero123_inputs(mesh)
-    initial_image = diffusion_pipeline(prompt=prompt, edges=condition_edges, negative_prompt=negative_prompt, fix_edges=True)
-    return generate_views(self.pipe, initial_image, condition_depth, depth_grid, num_inference_steps)
-
+    with torch.no_grad():
+      condition_edges, condition_depth, depth_grid, view_edges = prepare_zero123_inputs(mesh)
+      initial_image = diffusion_pipeline(prompt=prompt, edges=condition_edges, negative_prompt=negative_prompt, fix_edges=True)
+      image_array = np.array(initial_image)
+      image_depth_array = np.array(condition_depth)
+      image_array[image_depth_array == 0.0] = 255 # FIXME: directly render the image with a white bg
+      image = Image.fromarray(image_array).resize((320, 320))
+      image = image.resize((DEPTH_IMAGE_SIZE, DEPTH_IMAGE_SIZE))
+      depth = depth.resize((DEPTH_IMAGE_SIZE * 2, DEPTH_IMAGE_SIZE * 3))
+      result = self.pipe(image, depth_image=depth_grid, num_inference_steps=num_inference_steps).images[0]
+      views = breakdown_view_grid(result)
+      
+      fixed = []
+      for view, edges in zip(views, view_edges):
+         f = diffusion_pipeline.fix_edges(view, edges)
+         fixed.append(f)
+      return initial_image, fixed
+    
   def to(self, device):
     self.pipe.to(device)
     
