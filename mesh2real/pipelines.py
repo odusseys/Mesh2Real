@@ -1,3 +1,4 @@
+from lib2to3 import fixer_base
 import torch
 from transformers import CLIPVisionModelWithProjection
 from PIL import Image
@@ -88,9 +89,9 @@ class Mesh2RealDiffuser():
         text2img_pipeline = make_text2img_pipe(img2img_pipeline).to("cuda")
         return Mesh2RealDiffuser(img2img_pipeline, text2img_pipeline)
 
-    def unload(self):
-        self.img2img_pipeline.to("cpu")
-        self.text2img_pipeline.to("cpu")
+    def to(self, device):
+        self.img2img_pipeline.to(device)
+        self.text2img_pipeline.to(device)
 
     def _text2img(self, prompt, edges, negative_prompt, controlnet_scale, ip_adapter_image, ip_adapter_scale, masks):
         clear_cuda()
@@ -106,46 +107,16 @@ class Mesh2RealDiffuser():
             cross_attention_kwargs=masks
         ).images[0]
 
-
-    def __call__(self, 
-        prompt, 
-        edges, 
-        negative_prompt=DEFAULT_NEGATIVE_PROMPT,
-        image=None, 
-        ip_adapter_image=None, 
-        ip_adapter_scale = None,
-        controlnet_scale = 0.3,
-        strength=0.5
-    ):
-        if edges is None:
-            raise ValueError("Edges must be provided")
-        if edges.width != IMAGE_SIZE or edges.height != IMAGE_SIZE:
-            raise ValueError("Edges size must be 1024x1024")
-        if ip_adapter_image:
-            if ip_adapter_image.width != IMAGE_SIZE or ip_adapter_image.height != IMAGE_SIZE:
-                raise ValueError("ip_adapter_image size must be 1024x1024")
-
-        masks = None
-        if ip_adapter_image is None:
-            ip_adapter_image = BLANK_IMAGE
-            ip_adapter_scale = 0.0
-            processor = IPAdapterMaskProcessor()
-            masks = processor.preprocess([BLANK_IMAGE], height=IMAGE_SIZE, width=IMAGE_SIZE)
-            masks={"ip_adapter_masks": masks}
-        if image is None:
-            return self._text2img(prompt, edges, negative_prompt, controlnet_scale, ip_adapter_image, ip_adapter_scale, masks)
-
+    def _img2img(self, prompt, edges, negative_prompt, image, strength, controlnet_scale, ip_adapter_image, ip_adapter_scale, masks):
         if strength not in [0.0, 0.25, 0.5, 1.0]:
-            raise ValueError("Strength must be one of [0.0, 0.25, 0.5, 1.0]")
-        
+                raise ValueError("Strength must be one of [0.0, 0.25, 0.5, 1.0]")
+            
         if image.width != IMAGE_SIZE or image.height != IMAGE_SIZE:
             raise ValueError("image size must be 1024x1024")
-        
-        
         clear_cuda()
 
         with torch.no_grad():
-            pipeline.set_ip_adapter_scale(ip_adapter_scale)
+            self.img2img_pipeline.set_ip_adapter_scale(ip_adapter_scale)
             return self.img2img_pipeline(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -158,6 +129,42 @@ class Mesh2RealDiffuser():
                 guidance_scale=0.0,
                 cross_attention_kwargs=masks
             ).images[0]
+        
+    def __call__(self, 
+        prompt, 
+        edges, 
+        negative_prompt=DEFAULT_NEGATIVE_PROMPT,
+        image=None, 
+        ip_adapter_image=None, 
+        ip_adapter_scale = None,
+        controlnet_scale = 0.3,
+        strength=0.5,
+        fix_edges=False
+    ):
+        if edges is None:
+            raise ValueError("Edges must be provided")
+        if edges.width != IMAGE_SIZE or edges.height != IMAGE_SIZE:
+            raise ValueError("Edges size must be 1024x1024")
+        if ip_adapter_image:
+            if ip_adapter_image.width != IMAGE_SIZE or ip_adapter_image.height != IMAGE_SIZE:
+                raise ValueError("ip_adapter_image size must be 1024x1024")
+        with torch.no_grad():
+            masks = None
+            res = None
+            if ip_adapter_image is None:
+                ip_adapter_image = BLANK_IMAGE
+                ip_adapter_scale = 0.0
+                processor = IPAdapterMaskProcessor()
+                masks = processor.preprocess([BLANK_IMAGE], height=IMAGE_SIZE, width=IMAGE_SIZE)
+                masks={"ip_adapter_masks": masks}
+            if image is None:
+                res = self._text2img(prompt, edges, negative_prompt, controlnet_scale, ip_adapter_image, ip_adapter_scale, masks)
+            else:
+                res = self._img2img(prompt, edges, negative_prompt, image, strength, controlnet_scale, ip_adapter_image, ip_adapter_scale, masks)
+            
+            if fix_edges:
+                return self.fix_edges(res, edges)
+            return res
     
     def fix_edges(self, image, edges):
         with torch.no_grad():
