@@ -2,4 +2,5 @@ FeatUp/build
 nvdiffrast
 **/__pycache__
 .lightning_studio
+.u2net
 __pycache__

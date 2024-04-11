@@ -17,7 +17,8 @@ sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     cmake \
     curl
 
-pip install ninja opencv-python diffusers transformers peft accelerate \
+pip install git+https://github.com/huggingface/diffusers.git
+pip install ninja opencv-python transformers peft accelerate \
      imageio imageio-ffmpeg
 
 cd FeatUp && pip install .

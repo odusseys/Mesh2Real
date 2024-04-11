@@ -10,36 +10,7 @@ from scipy.interpolate import griddata
 from skimage.color import rgb2gray
 from skimage.transform import warp
 from skimage.registration import optical_flow_tvl1
-
-def warp_image(image0, image1, target, order=3):
-  image0 = np.array(image0)
-  image1 = np.array(image1)
-
-  # --- Convert the images to gray level: color is not supported.
-  image0gray = rgb2gray(image0)
-  image1gray = rgb2gray(image1)
-
-
-  # --- Compute the optical flow
-  v, u = optical_flow_tvl1(image0gray, image1gray, prefilter=True)
-
-  # --- Use the estimated optical flow for registration
-
-  nr, nc = image0gray.shape
-
-  row_coords, col_coords = np.meshgrid(np.arange(nr), np.arange(nc),
-                                      indexing='ij')
-
-  def warp_channel(channel):
-      channel = channel / 255.0
-      return warp(channel, np.array([row_coords + v, col_coords + u]),
-                      mode='edge', order=order)
-  target = np.array(target)
-  r = warp_channel(target[:,:,0])
-  g = warp_channel(target[:,:,1])
-  b = warp_channel(target[:,:,2])
-  target_warp = Image.fromarray((np.stack([r,g,b], axis=2) * 255).astype(np.uint8))
-  return target_warp
+from mesh2real.constants import IMAGE_SIZE
 
 FEATURE_MAP_SIZE = 256
 N_FEATURES = 384
@@ -74,31 +45,58 @@ def norm_features(f):
   for i in range(3):
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
     f[:,:,i] = clahe.apply(f[:,:,i])
-  return f
+  return cv2.resize(f, (IMAGE_SIZE, IMAGE_SIZE))
+
+
+def warp_image(image0, image1, target, order=3):
+  image0 = np.array(image0)
+  image1 = np.array(image1)
+  image0gray = rgb2gray(image0)
+  image1gray = rgb2gray(image1)
+  nr, nc = image0gray.shape
+
+  v, u = optical_flow_tvl1(image0gray, image1gray, prefilter=True)
+
+
+  row_coords, col_coords = np.meshgrid(np.arange(nr), np.arange(nc),
+                                      indexing='ij')
+
+  def warp_channel(channel):
+      channel = channel / 255.0
+      return warp(channel, np.array([row_coords + v, col_coords + u]),
+                      mode='edge', order=order)
+
+  target = np.array(target)
+  r = warp_channel(target[:,:,0])
+  g = warp_channel(target[:,:,1])
+  b = warp_channel(target[:,:,2])
+  target_warp = Image.fromarray((np.stack([r,g,b], axis=2) * 255).astype(np.uint8))
+  return target_warp
 
 def semantic_registration(upsampler, image0, image1):
     [f1, f2] = get_featup_features(upsampler, [image0, image1])
-    f1, f2 = reduce_dimension(f1, f2, 3)
+    f1, f2 = reduce_dimension(f1, f2)
     f1 = norm_features(f1)
     f2 = norm_features(f2)
     return warp_image(Image.fromarray(f1.astype(np.uint8)), Image.fromarray(f2.astype(np.uint8)), image1)
 
 def edge_registration(upsampler, pipeline, image, edges):
-    def denoise(init_image, strength=1,
-            controlnet_conditioning_scale=0.5, ip_adapter_scale=0.5):
+    print("image and edges", image.size, edges.size)
+    def denoise(init_image, strength=1, controlnet_scale=0.5):
         return pipeline(
             prompt="",
             edges=edges,
             image=init_image,
             strength=strength,
-            controlnet_conditioning_scale=controlnet_conditioning_scale,
+            controlnet_scale=controlnet_scale,
             ip_adapter_image=image,
-            ip_adapter_scale=ip_adapter_scale
-        ).images[0]
+            ip_adapter_scale=1
+        )
         
-    raw_correction = denoise(warped,
-                        controlnet_conditioning_scale=0.9, strength=1, ip_adapter_scale=1)
-    
+    raw_correction = denoise(image, controlnet_scale=0.9, strength=1)
+    print("corrected", raw_correction.size)
     warped = semantic_registration(upsampler, image, raw_correction)
-    return denoise("", warped,
-                        controlnet_conditioning_scale=0.3, strength=0.5, ip_adapter_scale=1)
+    print("warped", warped.size)
+    fixed = denoise(warped, controlnet_scale=0.3, strength=0.5)
+    print("fixed", fixed.size)
+    return fixed

@@ -92,6 +92,7 @@ class Mesh2RealDiffuser():
         # TODO: compile models
         img2img_pipeline = make_img2img_pipe().to("cuda")
         text2img_pipeline = make_text2img_pipe(img2img_pipeline).to("cuda")
+        text2img_pipeline.unload_ip_adapter()
         upsampler = torch.hub.load("mhamilton723/FeatUp", 'dinov2').eval().cuda()
         return Mesh2RealDiffuser(img2img_pipeline, text2img_pipeline, upsampler)
 
@@ -99,9 +100,8 @@ class Mesh2RealDiffuser():
         self.img2img_pipeline.to(device)
         self.text2img_pipeline.to(device)
 
-    def _text2img(self, prompt, edges, negative_prompt, controlnet_scale, ip_adapter_image, ip_adapter_scale, masks):
+    def _text2img(self, prompt, edges, negative_prompt, controlnet_scale):
         clear_cuda()
-        self.text2img_pipeline.set_ip_adapter_scale(ip_adapter_scale)
         return self.text2img_pipeline(
             prompt, 
             image=edges, 
@@ -109,8 +109,6 @@ class Mesh2RealDiffuser():
             controlnet_conditioning_scale=controlnet_scale,
             num_inference_steps=4,
             guidance_scale=0.0,
-            ip_adapter_image=ip_adapter_image,
-            cross_attention_kwargs=masks
         ).images[0]
 
     def _img2img(self, prompt, edges, negative_prompt, image, strength, controlnet_scale, ip_adapter_image, ip_adapter_scale, masks):
@@ -157,15 +155,15 @@ class Mesh2RealDiffuser():
         with torch.no_grad():
             masks = None
             res = None
-            if ip_adapter_image is None:
-                ip_adapter_image = BLANK_IMAGE
-                ip_adapter_scale = 0.0
-                processor = IPAdapterMaskProcessor()
-                masks = processor.preprocess([BLANK_IMAGE], height=IMAGE_SIZE, width=IMAGE_SIZE)
-                masks={"ip_adapter_masks": masks}
             if image is None:
-                res = self._text2img(prompt, edges, negative_prompt, controlnet_scale, ip_adapter_image, ip_adapter_scale, masks)
+                res = self._text2img(prompt, edges, negative_prompt, controlnet_scale)
             else:
+                if ip_adapter_image is None:
+                    ip_adapter_image = BLANK_IMAGE
+                    ip_adapter_scale = 0.0
+                    processor = IPAdapterMaskProcessor()
+                    masks = processor.preprocess([BLANK_IMAGE], height=IMAGE_SIZE, width=IMAGE_SIZE)
+                    masks={"ip_adapter_masks": masks}
                 res = self._img2img(prompt, edges, negative_prompt, image, strength, controlnet_scale, ip_adapter_image, ip_adapter_scale, masks)
             
             if fix_edges:
@@ -174,6 +172,6 @@ class Mesh2RealDiffuser():
     
     def fix_edges(self, image, edges):
         with torch.no_grad():
-            return edge_registration(self, self.upsampler, image, edges)
+            return edge_registration(self.upsampler, self, image, edges)
 
     

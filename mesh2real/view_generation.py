@@ -31,11 +31,14 @@ def make_view_inputs(mesh, maps, elevation, azimuth):
     phi_view = azimuth
     cam, light = polar_camera_and_light(R, phi_view, theta_view)
     output = render_scene(mesh, maps, cam, light, depth_slack=0.0)
-    depth = output.depth.cpu().detach().numpy()
 
+    depth = output.depth.cpu().detach().numpy()
     depth = 1.0 - depth # zero123++ works with inverted depth for some reason
     depth = Image.fromarray((depth * 255.0).astype(np.uint8)).resize((DEPTH_IMAGE_SIZE,DEPTH_IMAGE_SIZE))
-    return depth, output.edges
+    
+    edges = output.edges.cpu().detach().numpy()
+    edges = Image.fromarray((edges * 255.0).astype(np.uint8)).resize((IMAGE_SIZE,IMAGE_SIZE))
+    return depth, edges
 
 def prepare_zero123_inputs(mesh):
   phi = 0
@@ -80,8 +83,7 @@ def generate_views(zero123_pipeline, image, image_depth, depth_grid, num_inferen
     views = breakdown_view_grid(result)
     return views
 
-class ViewGenerator():
-
+class ViewGenerator:
   def __init__(self):
     pipe = DiffusionPipeline.from_pretrained(
     "sudo-ai/zero123plus-v1.2", custom_pipeline="sudo-ai/zero123plus-pipeline",
@@ -95,6 +97,7 @@ class ViewGenerator():
   
   def generate_views(self, diffusion_pipeline: Mesh2RealDiffuser, mesh, prompt, negative_prompt = None,  num_inference_steps=100):
     with torch.no_grad():
+      self.to("cuda")
       condition_edges, condition_depth, depth_grid, view_edges = prepare_zero123_inputs(mesh)
       initial_image = diffusion_pipeline(prompt=prompt, edges=condition_edges, negative_prompt=negative_prompt, fix_edges=True)
       image_array = np.array(initial_image)
@@ -102,7 +105,6 @@ class ViewGenerator():
       image_array[image_depth_array == 0.0] = 255 # FIXME: directly render the image with a white bg
       image = Image.fromarray(image_array).resize((320, 320))
       image = image.resize((DEPTH_IMAGE_SIZE, DEPTH_IMAGE_SIZE))
-      depth = depth.resize((DEPTH_IMAGE_SIZE * 2, DEPTH_IMAGE_SIZE * 3))
       result = self.pipe(image, depth_image=depth_grid, num_inference_steps=num_inference_steps).images[0]
       views = breakdown_view_grid(result)
       
@@ -110,6 +112,7 @@ class ViewGenerator():
       for view, edges in zip(views, view_edges):
          f = diffusion_pipeline.fix_edges(view, edges)
          fixed.append(f)
+      self.to("cpu")
       return initial_image, fixed
     
   def to(self, device):
